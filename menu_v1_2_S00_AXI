@@ -1,0 +1,230 @@
+`timescale 1 ns / 1 ps
+
+module menu_v1_2_S00_AXI #
+(
+    parameter NUM_PAGES = 4,
+    parameter NUM_ITEMS_PER_PAGE = 4,
+    parameter PAGE_WIDTH = 2,
+    parameter ITEM_WIDTH = 2,
+
+    parameter integer C_S_AXI_DATA_WIDTH = 32,
+    parameter integer C_S_AXI_ADDR_WIDTH = 4
+)
+(
+    input  wire S_AXI_ACLK,
+    input  wire S_AXI_ARESETN,
+
+    input  wire [C_S_AXI_ADDR_WIDTH-1:0] S_AXI_AWADDR,
+    input  wire [2:0]  S_AXI_AWPROT,
+    input  wire        S_AXI_AWVALID,
+    output wire        S_AXI_AWREADY,
+
+    input  wire [C_S_AXI_DATA_WIDTH-1:0] S_AXI_WDATA,
+    input  wire [(C_S_AXI_DATA_WIDTH/8)-1:0] S_AXI_WSTRB,
+    input  wire        S_AXI_WVALID,
+    output wire        S_AXI_WREADY,
+
+    output wire [1:0]  S_AXI_BRESP,
+    output wire        S_AXI_BVALID,
+    input  wire        S_AXI_BREADY,
+
+    input  wire [C_S_AXI_ADDR_WIDTH-1:0] S_AXI_ARADDR,
+    input  wire [2:0]  S_AXI_ARPROT,
+    input  wire        S_AXI_ARVALID,
+    output wire        S_AXI_ARREADY,
+
+    output wire [C_S_AXI_DATA_WIDTH-1:0] S_AXI_RDATA,
+    output wire [1:0]  S_AXI_RRESP,
+    output wire        S_AXI_RVALID,
+    input  wire        S_AXI_RREADY
+);
+
+    /* ================= AXI CORE ================= */
+
+    reg axi_awready, axi_wready, axi_bvalid;
+    reg axi_arready, axi_rvalid;
+    reg [1:0] axi_bresp, axi_rresp;
+    reg [C_S_AXI_ADDR_WIDTH-1:0] axi_awaddr, axi_araddr;
+    reg [C_S_AXI_DATA_WIDTH-1:0] axi_rdata;
+    reg aw_en;
+
+    localparam ADDR_LSB = (C_S_AXI_DATA_WIDTH/32)+1;
+    localparam OPT_MEM_ADDR_BITS = 1;
+
+    assign S_AXI_AWREADY = axi_awready;
+    assign S_AXI_WREADY  = axi_wready;
+    assign S_AXI_BVALID  = axi_bvalid;
+    assign S_AXI_BRESP   = axi_bresp;
+    assign S_AXI_ARREADY = axi_arready;
+    assign S_AXI_RVALID  = axi_rvalid;
+    assign S_AXI_RRESP   = axi_rresp;
+    assign S_AXI_RDATA   = axi_rdata;
+
+    /* ================= REGISTERS ================= */
+
+    reg [31:0] slv_reg0; // COMMAND
+    reg [31:0] slv_reg1; // PAGE
+    reg [31:0] slv_reg2; // ITEM
+    reg [31:0] slv_reg3; // SELECTED_ID
+
+    wire slv_reg_wren;
+    wire slv_reg_rden;
+
+    /* ================= COMMAND DEFINES ================= */
+
+    localparam CMD_PAGE_NEXT = 0;
+    localparam CMD_PAGE_PREV = 1;
+    localparam CMD_ITEM_NEXT = 2;
+    localparam CMD_ITEM_PREV = 3;
+    localparam CMD_SELECT    = 4;
+
+    /* ================= AXI WRITE ================= */
+
+    always @(posedge S_AXI_ACLK) begin
+        if (!S_AXI_ARESETN) begin
+            axi_awready <= 0;
+            aw_en <= 1;
+        end else if (~axi_awready && S_AXI_AWVALID && S_AXI_WVALID && aw_en) begin
+            axi_awready <= 1;
+            aw_en <= 0;
+        end else if (S_AXI_BREADY && axi_bvalid) begin
+            aw_en <= 1;
+            axi_awready <= 0;
+        end else begin
+            axi_awready <= 0;
+        end
+    end
+
+    always @(posedge S_AXI_ACLK) begin
+        if (!S_AXI_ARESETN)
+            axi_awaddr <= 0;
+        else if (~axi_awready && S_AXI_AWVALID && S_AXI_WVALID && aw_en)
+            axi_awaddr <= S_AXI_AWADDR;
+    end
+
+    always @(posedge S_AXI_ACLK) begin
+        if (!S_AXI_ARESETN)
+            axi_wready <= 0;
+        else if (~axi_wready && S_AXI_WVALID && S_AXI_AWVALID && aw_en)
+            axi_wready <= 1;
+        else
+            axi_wready <= 0;
+    end
+
+    assign slv_reg_wren = axi_wready & S_AXI_WVALID & axi_awready & S_AXI_AWVALID;
+
+    always @(posedge S_AXI_ACLK) begin
+        if (!S_AXI_ARESETN)
+            slv_reg0 <= 0;
+        else if (slv_reg_wren && axi_awaddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB]==0)
+            slv_reg0 <= S_AXI_WDATA;
+    end
+
+    always @(posedge S_AXI_ACLK) begin
+        if (!S_AXI_ARESETN) begin
+            axi_bvalid <= 0;
+            axi_bresp  <= 2'b00;
+        end else if (axi_awready && S_AXI_AWVALID && axi_wready && S_AXI_WVALID && ~axi_bvalid) begin
+            axi_bvalid <= 1;
+        end else if (S_AXI_BREADY && axi_bvalid)
+            axi_bvalid <= 0;
+    end
+
+    /* ================= AXI READ ================= */
+
+    always @(posedge S_AXI_ACLK) begin
+        if (!S_AXI_ARESETN) begin
+            axi_arready <= 0;
+            axi_araddr  <= 0;
+        end else if (~axi_arready && S_AXI_ARVALID) begin
+            axi_arready <= 1;
+            axi_araddr  <= S_AXI_ARADDR;
+        end else
+            axi_arready <= 0;
+    end
+
+    always @(posedge S_AXI_ACLK) begin
+        if (!S_AXI_ARESETN) begin
+            axi_rvalid <= 0;
+            axi_rresp  <= 0;
+        end else if (axi_arready && S_AXI_ARVALID && ~axi_rvalid) begin
+            axi_rvalid <= 1;
+        end else if (axi_rvalid && S_AXI_RREADY)
+            axi_rvalid <= 0;
+    end
+
+    assign slv_reg_rden = axi_arready & S_AXI_ARVALID & ~axi_rvalid;
+
+    always @(*) begin
+        case (axi_araddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB])
+            0: axi_rdata = slv_reg0;
+            1: axi_rdata = slv_reg1;
+            2: axi_rdata = slv_reg2;
+            3: axi_rdata = slv_reg3;
+            default: axi_rdata = 0;
+        endcase
+    end
+
+    /* ================= COMMAND ? BUTTON (FIXED) ================= */
+
+    reg [5:0] cmd_reg, cmd_reg_d;
+
+    always @(posedge S_AXI_ACLK) begin
+        if (!S_AXI_ARESETN) begin
+            cmd_reg   <= 0;
+            cmd_reg_d <= 0;
+        end else begin
+            if (slv_reg_wren && axi_awaddr[ADDR_LSB+OPT_MEM_ADDR_BITS:ADDR_LSB]==0)
+                cmd_reg <= S_AXI_WDATA[5:0];
+            cmd_reg_d <= cmd_reg;
+        end
+    end
+
+    wire btn_up     =  cmd_reg[CMD_ITEM_PREV] & ~cmd_reg_d[CMD_ITEM_PREV];
+    wire btn_down   =  cmd_reg[CMD_ITEM_NEXT] & ~cmd_reg_d[CMD_ITEM_NEXT];
+    wire btn_left   =  cmd_reg[CMD_PAGE_PREV] & ~cmd_reg_d[CMD_PAGE_PREV];
+    wire btn_right  =  cmd_reg[CMD_PAGE_NEXT] & ~cmd_reg_d[CMD_PAGE_NEXT];
+    wire btn_select =  cmd_reg[CMD_SELECT]    & ~cmd_reg_d[CMD_SELECT];
+
+    /* ================= MENU CONTROLLER ================= */
+
+    wire [PAGE_WIDTH-1:0] current_page;
+    wire [ITEM_WIDTH-1:0] current_item;
+    wire [7:0] selected_id;
+
+    menu_controller #(
+        .NUM_PAGES(NUM_PAGES),
+        .NUM_ITEMS_PER_PAGE(NUM_ITEMS_PER_PAGE),
+        .PAGE_WIDTH(PAGE_WIDTH),
+        .ITEM_WIDTH(ITEM_WIDTH)
+    ) u_menu (
+        .clk(S_AXI_ACLK),
+        .rst_n(S_AXI_ARESETN),
+        .btn_up(btn_up),
+        .btn_down(btn_down),
+        .btn_left(btn_left),
+        .btn_right(btn_right),
+        .btn_select(btn_select),
+        .current_page(current_page),
+        .current_item(current_item),
+        .selected_id(selected_id),
+        .item_selected(),
+        .lcd_data(),
+        .lcd_data_valid()
+    );
+
+    /* ================= STATUS REG UPDATE ================= */
+
+    always @(posedge S_AXI_ACLK) begin
+        if (!S_AXI_ARESETN) begin
+            slv_reg1 <= 0;
+            slv_reg2 <= 0;
+            slv_reg3 <= 0;
+        end else begin
+            slv_reg1 <= current_page;
+            slv_reg2 <= current_item;
+            slv_reg3 <= selected_id;
+        end
+    end
+
+endmodule
